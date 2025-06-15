@@ -48,23 +48,23 @@ func NewUpdater(currentVersion string) (*Updater, error) {
 	return &Updater{
 		httpClient:     &http.Client{Timeout: 60 * time.Second},
 		githubClient:   github.NewClient(nil),
-		releaseURL:     "https://api.github.com/repos/nodexeus/sqd-agent/releases/latest",
+		releaseURL:     "https://api.github.com/repos/nodexeus/sqd-network-monitor/releases/latest",
 		currentVersion: currentVersion,
 		executablePath: execPath,
 		owner:          "nodexeus",
-		repo:           "sqd-agent",
+		repo:           "sqd-network-monitor",
 	}, nil
 }
 
 // IsDebianPackage checks if the application was installed via Debian package
 func (u *Updater) IsDebianPackage() bool {
 	// Check for the existence of the debian control file
-	if _, err := os.Stat("/var/lib/dpkg/info/sqd-agent.list"); err == nil {
-		log.Infof("Found Debian package for sqd-agent")
+	if _, err := os.Stat("/var/lib/dpkg/info/sqd-network-monitor.list"); err == nil {
+		log.Infof("Found Debian package for sqd-network-monitor")
 		return true
 	}
 	// Alternative check for dpkg status
-	cmd := exec.Command("dpkg-query", "-W", "--showformat=${Status}", "sqd-agent")
+	cmd := exec.Command("dpkg-query", "-W", "--showformat=${Status}", "sqd-network-monitor")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return false
@@ -85,7 +85,7 @@ func (u *Updater) CheckForUpdates() (*ReleaseInfo, error) {
 // checkDebianUpdate checks for updates using apt
 func (u *Updater) checkDebianUpdate() (*ReleaseInfo, error) {
 	// Get current installed version
-	cmd := exec.Command("dpkg-query", "--showformat=${Version}", "--show", "sqd-agent")
+	cmd := exec.Command("dpkg-query", "--showformat=${Version}", "--show", "sqd-network-monitor")
 	currentVersion, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current package version: %v", err)
@@ -98,7 +98,7 @@ func (u *Updater) checkDebianUpdate() (*ReleaseInfo, error) {
 	}
 
 	// Check upgradeable packages
-	upgradeCmd := exec.Command("apt-cache", "policy", "sqd-agent")
+	upgradeCmd := exec.Command("apt-cache", "policy", "sqd-network-monitor")
 	output, err := upgradeCmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to check for upgrades: %v", err)
@@ -115,7 +115,7 @@ func (u *Updater) checkDebianUpdate() (*ReleaseInfo, error) {
 	if candidateVersion != strings.TrimSpace(string(currentVersion)) && candidateVersion != "(none)" {
 		return &ReleaseInfo{
 			Version:     candidateVersion,
-			URL:         "apt:sqd-agent",
+			URL:         "apt:sqd-network-monitor",
 			ReleaseDate: time.Now(),
 			IsDebian:    true,
 		}, nil
@@ -137,9 +137,9 @@ func (u *Updater) checkGitHubUpdate() (*ReleaseInfo, error) {
 		var assetURL, checksumURL string
 		for _, asset := range release.Assets {
 			name := asset.GetName()
-			if name == "sqd-agent_"+latestVersion+"_linux_amd64.deb" {
+			if name == "sqd-network-monitor_"+latestVersion+"_linux_amd64.deb" {
 				assetURL = asset.GetBrowserDownloadURL()
-			} else if name == "sqd-agent_"+latestVersion+"_linux_amd64.deb.sha256" {
+			} else if name == "sqd-network-monitor_"+latestVersion+"_linux_amd64.deb.sha256" {
 				checksumURL = asset.GetBrowserDownloadURL()
 			}
 		}
@@ -226,7 +226,7 @@ func (u *Updater) updateDebian() error {
 	}
 
 	// Run the upgrade
-	cmd = exec.Command("apt-get", "install", "--only-upgrade", "-y", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold", "sqd-agent")
+	cmd = exec.Command("apt-get", "install", "--only-upgrade", "-y", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold", "sqd-network-monitor")
 	cmd.Env = append(os.Environ(),
 		"DEBIAN_FRONTEND=noninteractive",
 		"APT_LISTCHANGES_FRONTEND=none",
@@ -241,7 +241,7 @@ func (u *Updater) updateDebian() error {
 
 	// Restart the service
 	log.Info("Restarting systemd service...")
-	restartCmd := exec.Command("systemctl", "restart", "sqd-agent.service")
+	restartCmd := exec.Command("systemctl", "restart", "sqd-network-monitor.service")
 	restartCmd.Stdout = nil
 	restartCmd.Stderr = nil
 	if err := restartCmd.Run(); err != nil {
