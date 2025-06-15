@@ -1,0 +1,247 @@
+name: Build and Publish sqd-network-monitor
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [created]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: '1.23'
+  APP_NAME: 'sqd-network-monitor'
+  CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+  CLOUDSMITH_REPO: 'nodexeus/sqd-network-monitor'
+  # Set environment variables for Go build cache
+  HOME: '/tmp/go-home'
+
+jobs:
+  build:
+    runs-on: sqd-network-monitor
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Go environment
+        run: |
+          # Create home directory and cache directories for Go
+          mkdir -p $HOME
+          mkdir -p $HOME/.cache/go-build
+          mkdir -p $HOME/go
+          echo "GOPATH=$HOME/go" >> $GITHUB_ENV
+          echo "GOCACHE=$HOME/.cache/go-build" >> $GITHUB_ENV
+          
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Get version
+        id: get_version
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            # Extract version from source code
+            VERSION=$(grep -oP 'version\s*=\s*"\K[^"]+' cmd/sqd-network-monitor/main.go)
+            if [ -z "$VERSION" ]; then
+              echo "Failed to extract version from source code"
+              exit 1
+            fi
+          fi
+          echo "Extracted version: $VERSION"
+          # Set version in environment for shell scripts to use
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          # Also set as output for any steps that might reference it
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build
+        run: |
+          # Use the version we extracted in the previous step
+          go build -v -ldflags "-X main.version=${VERSION} -X main.buildTime=$(date +'%Y-%m-%d_%H:%M:%S')" -o ${{ env.APP_NAME }} ./cmd/${{ env.APP_NAME }}/
+
+      - name: Test
+        run: go test -v ./...
+
+      - name: Create packages directory
+        run: mkdir -p packages
+
+      - name: Create tar package
+        run: |
+          mkdir -p ${{ env.APP_NAME }}-${VERSION}
+          cp ${{ env.APP_NAME }} ${{ env.APP_NAME }}-${VERSION}/
+          cp -r configs ${{ env.APP_NAME }}-${VERSION}/ || echo "No configs directory"
+          cp README.md ${{ env.APP_NAME }}-${VERSION}/ || echo "No README.md file"
+          tar -czvf packages/${{ env.APP_NAME }}-${VERSION}.tar.gz ${{ env.APP_NAME }}-${VERSION}
+
+      - name: Set up debian package structure
+        run: |
+          mkdir -p debian/DEBIAN
+          mkdir -p debian/etc/sqd-network-monitor
+          mkdir -p debian/usr/bin
+          mkdir -p debian/lib/systemd/system
+          
+          # Create control file
+          cat > debian/DEBIAN/control << EOF
+          Package: ${{ env.APP_NAME }}
+          Version: ${VERSION}
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Nodexeus <support@nodexeus.io>
+          Description: SQD Agent for monitoring SQD nodes on teh netowrk
+           This agent monitors SQD nodes and provides metrics to Prometheus.
+          EOF
+          
+          # Create postinst script (runs after installation)
+          cat > debian/DEBIAN/postinst << 'EOL'
+          #!/bin/sh
+          set -e
+          
+          # Create config directory if it doesn't exist
+          mkdir -p /etc/sqd-network-monitor
+          
+          # If config file doesn't exist, create it from the example
+          if [ ! -f /etc/sqd-network-monitor/config.yaml ]; then
+              cp /etc/sqd-network-monitor/config.yaml.dpkg-new /etc/sqd-network-monitor/config.yaml 2>/dev/null || \
+              cp /usr/share/sqd-network-monitor/config.yaml.example /etc/sqd-network-monitor/config.yaml 2>/dev/null || true
+          fi
+          
+          # Set proper permissions
+          chmod 644 /etc/sqd-network-monitor/config.yaml
+          
+          # Mark the config file as conffile if not already
+          if ! grep -q '/etc/sqd-network-monitor/config.yaml' /var/lib/dpkg/info/sqd-network-monitor.conffiles 2>/dev/null; then
+              echo "/etc/sqd-network-monitor/config.yaml" >> /var/lib/dpkg/info/sqd-network-monitor.conffiles
+          fi
+          
+          # Reload systemd to pick up any changes
+          if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+          fi
+          
+          exit 0
+          EOL
+          
+          # Create prerm script (runs before removal)
+          cat > debian/DEBIAN/prerm << 'EOL'
+          #!/bin/sh
+          set -e
+          exit 0
+          EOL
+          
+          # Create postrm script (runs after removal)
+          cat > debian/DEBIAN/postrm << EOF
+          #!/bin/sh
+          set -e
+          
+          # Don't remove data directory by default (preserve user data)
+          # Uncomment if you want to remove data on package removal
+          # rm -rf /var/lib/sqd-network-monitor
+          
+          # Reload systemd
+          if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+          fi
+          
+          exit 0
+          EOF
+          
+          # Make scripts executable
+          chmod 755 debian/DEBIAN/postinst
+          chmod 755 debian/DEBIAN/prerm
+          chmod 755 debian/DEBIAN/postrm
+          
+          # Create systemd service file
+          cat > debian/lib/systemd/system/sqd-network-monitor.service << EOF
+          [Unit]
+          Description=SQD Network Monitor Service
+          After=network.target
+          
+          [Service]
+          Type=simple
+          User=root
+          ExecStart=/usr/bin/sqd-network-monitor -config /etc/sqd-network-monitor/config.yaml
+          Restart=on-failure
+          RestartSec=20
+          
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          
+          # Copy binary and config
+          cp ${{ env.APP_NAME }} debian/usr/bin/
+          
+          # Create default config
+          cat > debian/etc/sqd-network-monitor/config.yaml << EOF
+          logLevel: "info"
+          monitorPeriod: "1m"
+          autoUpdate: true
+          prometheus:
+            enabled: true
+            port: 9090
+            path: "/metrics"
+          graphql:
+            endpoint: "https://subsquid.squids.live/subsquid-network-mainnet/graphql"
+          EOF
+          
+          # Set permissions
+          chmod 755 debian/usr/bin/${{ env.APP_NAME }}
+          chmod 644 debian/lib/systemd/system/sqd-network-monitor.service
+          chmod 644 debian/etc/sqd-network-monitor/config.yaml
+          
+          # Create DEBIAN directory and control files
+          mkdir -p debian/DEBIAN
+          
+          # Create conffiles to mark config files
+          echo "/etc/sqd-network-monitor/config.yaml" > debian/DEBIAN/conffiles
+
+      - name: Build DEB package
+        run: |
+          # Build the package
+          dpkg-deb --root-owner-group --build debian
+          
+          # Rename the package with version
+          mv debian.deb packages/${{ env.APP_NAME }}_${VERSION}_amd64.deb
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-packages
+          path: packages/
+
+      - name: Publish to GitHub Packages
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: Release ${{ env.VERSION }}
+          draft: false
+          prerelease: false
+          files: |
+            packages/${{ env.APP_NAME }}_${{ env.VERSION }}_amd64.deb
+            packages/${{ env.APP_NAME }}-${{ env.VERSION }}.tar.gz
+          generate_release_notes: true
+          body: |
+            ## New version ${{ env.VERSION }}
+            
+            ### Changes
+            Automated build from GitHub Actions
+
+      - name: Publish deb to Cloudsmith
+        uses: cloudsmith-io/action@master
+        id: cloudsmith
+        with:
+          api-key: ${{ secrets.CLOUDSMITH_API_KEY }}
+          command: 'push'
+          format: 'deb'
+          owner: 'nodexeus'
+          repo: 'sqd-network-monitor'
+          distro: 'ubuntu'
+          release: 'jammy'
+          republish: true
+          file: packages/${{ env.APP_NAME }}_${{ env.VERSION }}_amd64.deb
