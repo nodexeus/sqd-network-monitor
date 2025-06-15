@@ -184,7 +184,7 @@ jobs:
           autoUpdate: true
           prometheus:
             enabled: true
-            port: 9090
+            port: 9091
             path: "/metrics"
           graphql:
             endpoint: "https://subsquid.squids.live/subsquid-network-mainnet/graphql"

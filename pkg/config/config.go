@@ -43,7 +43,7 @@ func DefaultConfig() *Config {
 		AutoUpdate:    true,
 		Prometheus: PrometheusConfig{
 			Enabled: true,
-			Port:    9090,
+			Port:    9091,
 			Path:    "/metrics",
 		},
 		GraphQL: GraphQLConfig{

@@ -59,7 +59,7 @@ autoUpdate: true     # Automatically update the agent when new versions are avai
 # Prometheus metrics settings
 prometheus:
   enabled: true
-  port: 9090
+  port: 9091
   path: "/metrics"
 
 # GraphQL API settings
