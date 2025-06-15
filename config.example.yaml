@@ -1,0 +1,9 @@
+logLevel: "info"
+monitorPeriod: "2m"
+autoUpdate: true
+prometheus:
+  enabled: true
+  port: 9090
+  path: "/metrics"
+graphql:
+  endpoint: "https://subsquid.squids.live/subsquid-network-mainnet/graphql"
