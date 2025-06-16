@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"time"
 
 	"github.com/nodexeus/sqd-network-monitor/pkg/api"
@@ -16,20 +17,21 @@ type NodeStatus struct {
 	Name              string
 	NetworkStatus     string // For special statuses like "pending" for newly created nodes
 	APR               float64
-	Online            bool
+	Online            bool // true/false indicate actual status
 	Jailed            bool
 	JailReason        string
 	Queries24Hours    int64
-	Uptime24Hours     int64
+	Uptime24Hours     float64
 	Version           string
 	ServedData24Hours int64
-	StoredData        int64
-	TotalDelegation   int64
-	ClaimedReward     int64
-	ClaimableReward   int64
+	StoredData        *big.Int
+	TotalDelegation   *big.Int
+	ClaimedReward     *big.Int
+	ClaimableReward   *big.Int
 	CreatedAt         time.Time
 	LastChecked       time.Time
 	Healthy           bool
+	Status            string
 }
 
 // DiscoveredNode represents a node discovered by a Discoverer
@@ -156,7 +158,7 @@ func (m *Monitor) discoverAndCheck(ctx context.Context) error {
 				}
 				statusMap[status.PeerID] = status
 
-				log.Debugf("Retrieved network status for node %s: online=%v, jailed=%v, jailReason=%s, name=%s, apr=%f, peerID=%s, version=%s, claimedReward=%d, claimableReward=%d, servedData24Hours=%d, storedData=%d, totalDelegation=%d, uptime24Hours=%d, queries24Hours=%d",
+				log.Debugf("Retrieved network status for node %s: online=%v, jailed=%v, jailReason=%s, name=%s, apr=%f, peerID=%s, version=%s, claimedReward=%d, claimableReward=%d, servedData24Hours=%d, storedData=%d, totalDelegation=%d, uptime24Hours=%f, queries24Hours=%d",
 					status.PeerID, status.Online, status.Jailed, status.JailReason, status.Name, status.APR, status.PeerID, status.Version, status.ClaimedReward, status.ClaimableReward, status.ServedData24Hours, status.StoredData, status.TotalDelegation, status.Uptime24Hours, status.Queries24Hours)
 			}
 
@@ -213,20 +215,37 @@ func (m *Monitor) discoverAndCheck(ctx context.Context) error {
 		// If we have network status for this node, update the status with the network data
 		if node.PeerID != "" {
 			if networkStatus, ok := networkStatuses[node.PeerID]; ok {
+				// Skip nodes where Online status is not set (nil)
+				if networkStatus.Online == nil {
+					log.Debugf("Skipping node %s: Online status not set", node.PeerID)
+					continue
+				}
+
 				// Update status with network data
 				status.Name = networkStatus.Name
 				status.APR = networkStatus.APR
-				status.Online = networkStatus.Online
+				status.Online = *networkStatus.Online
 				status.Jailed = networkStatus.Jailed
 				status.JailReason = networkStatus.JailReason
 				status.Queries24Hours = networkStatus.Queries24Hours
 				status.Uptime24Hours = networkStatus.Uptime24Hours
 				status.Version = networkStatus.Version
 				status.ServedData24Hours = networkStatus.ServedData24Hours
-				status.StoredData = networkStatus.StoredData
-				status.TotalDelegation = networkStatus.TotalDelegation
-				status.ClaimedReward = networkStatus.ClaimedReward
-				status.ClaimableReward = networkStatus.ClaimableReward
+				
+				// Handle *big.Int fields - create new instances to avoid sharing the same reference
+				if networkStatus.StoredData != nil {
+					status.StoredData = new(big.Int).Set(networkStatus.StoredData)
+				}
+				if networkStatus.TotalDelegation != nil {
+					status.TotalDelegation = new(big.Int).Set(networkStatus.TotalDelegation)
+				}
+				if networkStatus.ClaimedReward != nil {
+					status.ClaimedReward = new(big.Int).Set(networkStatus.ClaimedReward)
+				}
+				if networkStatus.ClaimableReward != nil {
+					status.ClaimableReward = new(big.Int).Set(networkStatus.ClaimableReward)
+				}
+				
 				status.CreatedAt = networkStatus.CreatedAt
 
 				// Set the network status
@@ -289,7 +308,7 @@ func (m *Monitor) isNodeHealthy(node *NodeStatus) bool {
 		return true
 	}
 
-	// Check network status
+	// Check network status (only if Online is explicitly set to false)
 	if !node.Online {
 		return false
 	}

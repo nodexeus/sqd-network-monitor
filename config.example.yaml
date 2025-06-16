@@ -1,4 +1,4 @@
-logLevel: "info"
+logLevel: "debug"
 monitorPeriod: "2m"
 autoUpdate: true
 prometheus:

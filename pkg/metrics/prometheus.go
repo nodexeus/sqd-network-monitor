@@ -2,7 +2,9 @@ package metrics
 
 import (
 	"fmt"
+	"math/big"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/nodexeus/sqd-network-monitor/pkg/config"
@@ -32,7 +34,6 @@ type PrometheusExporter struct {
 	nodeTotalDelegation   *prometheus.GaugeVec
 	nodeClaimedReward     *prometheus.GaugeVec
 	nodeClaimableReward   *prometheus.GaugeVec
-	nodeLocalStatus       *prometheus.GaugeVec
 	nodeHealthy           *prometheus.GaugeVec
 
 	// GraphQL client metrics
@@ -57,7 +58,7 @@ func NewPrometheusExporter(cfg *config.Config, getNodeStatuses NodeStatusProvide
 				Name: "sqd_node_apr",
 				Help: "Annual Percentage Rate (APR) of the SQD node",
 			},
-			[]string{"peer_id", "name", "version"},
+			[]string{"peer_id", "name", "version", "created_at", "status"},
 		),
 		nodeJailed: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -71,63 +72,63 @@ func NewPrometheusExporter(cfg *config.Config, getNodeStatuses NodeStatusProvide
 				Name: "sqd_node_online",
 				Help: "Status of the SQD node on the network: 0=offline, 1=online, 2=unregistered (exists but not yet registered on network)",
 			},
-			[]string{"peer_id", "name", "version"},
+			[]string{"peer_id", "name", "version", "created_at", "status"},
 		),
 		nodeQueries24Hours: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "sqd_node_queries_24h",
 				Help: "Number of queries made to the SQD node in the last 24 hours",
 			},
-			[]string{"peer_id", "name", "version"},
+			[]string{"peer_id", "name", "version", "created_at", "status"},
 		),
 		nodeUptime24Hours: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "sqd_node_uptime_24h",
 				Help: "Uptime of the SQD node in the last 24 hours",
 			},
-			[]string{"peer_id", "name", "version"},
+			[]string{"peer_id", "name", "version", "created_at", "status"},
 		),
 		nodeServedData24Hours: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "sqd_node_served_data_24h",
 				Help: "Number of bytes served by the SQD node in the last 24 hours",
 			},
-			[]string{"peer_id", "name", "version"},
+			[]string{"peer_id", "name", "version", "created_at", "status"},
 		),
 		nodeStoredData: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "sqd_node_stored_data",
 				Help: "Number of bytes stored by the SQD node",
 			},
-			[]string{"peer_id", "name", "version"},
+			[]string{"peer_id", "name", "version", "created_at", "status"},
 		),
 		nodeTotalDelegation: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "sqd_node_total_delegation",
 				Help: "Total delegation to the SQD node",
 			},
-			[]string{"peer_id", "name", "version"},
+			[]string{"peer_id", "name", "version", "created_at", "status"},
 		),
 		nodeClaimedReward: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "sqd_node_claimed_reward",
 				Help: "Number of rewards claimed by the SQD node",
 			},
-			[]string{"peer_id", "name", "version"},
+			[]string{"peer_id", "name", "version", "created_at", "status"},
 		),
 		nodeClaimableReward: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "sqd_node_claimable_reward",
 				Help: "Number of rewards claimable by the SQD node",
 			},
-			[]string{"peer_id", "name", "version"},
+			[]string{"peer_id", "name", "version", "created_at", "status"},
 		),
 		nodeHealthy: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "sqd_node_healthy",
 				Help: "Whether the SQD node is healthy (1) or not (0)",
 			},
-			[]string{"peer_id", "name", "version"},
+			[]string{"peer_id", "name", "version", "created_at", "status"},
 		),
 
 		// GraphQL client metrics
@@ -295,16 +296,18 @@ func (e *PrometheusExporter) UpdateMetrics() {
 	e.nodeClaimableReward.Reset()
 
 	// Update metrics for each node
-	for instance, status := range statuses {
-		if status == nil {
-			log.Warnf("Found nil status for instance %s, skipping", instance)
+	for _, status := range statuses {
+		// Skip nodes without a peer ID or with nil Online status
+		if status.PeerID == "" {
 			continue
 		}
 
 		labels := prometheus.Labels{
-			"peer_id": status.PeerID,
-			"name":    status.Name,
-			"version": status.Version,
+			"peer_id":    status.PeerID,
+			"name":       status.Name,
+			"version":    status.Version,
+			"created_at": status.CreatedAt.Format(time.RFC3339),
+			"status":     strings.ToLower(status.NetworkStatus),
 		}
 
 		// APR
@@ -338,10 +341,14 @@ func (e *PrometheusExporter) UpdateMetrics() {
 			// Value 1 represents online state
 			e.nodeOnline.With(labels).Set(1)
 			log.Debugf("Set online metric for %s: 1 (online)", status.PeerID)
-		} else {
-			// Value 0 represents offline state
+		} else if !status.Online {
+			// Value 0 represents offline state (explicitly set to false)
 			e.nodeOnline.With(labels).Set(0)
 			log.Debugf("Set online metric for %s: 0 (offline)", status.PeerID)
+		} else {
+			// Handle case where Online is nil (not set)
+			e.nodeOnline.With(labels).Set(-1)
+			log.Debugf("Set online metric for %s: -1 (status not reported)", status.PeerID)
 		}
 
 		// Healthy status
@@ -354,45 +361,53 @@ func (e *PrometheusExporter) UpdateMetrics() {
 		}
 
 		// Queries24Hours
-		if status.Queries24Hours > 0 {
+		if status.Queries24Hours >= 0 {
 			e.nodeQueries24Hours.With(labels).Set(float64(status.Queries24Hours))
 			log.Debugf("Set queries24Hours metric for %s: %d", status.PeerID, status.Queries24Hours)
 		}
 
 		// Uptime24Hours
-		if status.Uptime24Hours > 0 {
+		if status.Uptime24Hours >= 0 {
 			e.nodeUptime24Hours.With(labels).Set(float64(status.Uptime24Hours))
-			log.Debugf("Set uptime24Hours metric for %s: %d", status.PeerID, status.Uptime24Hours)
+			log.Debugf("Set uptime24Hours metric for %s: %f", status.PeerID, status.Uptime24Hours)
 		}
 
 		// ServedData24Hours
-		if status.ServedData24Hours > 0 {
+		if status.ServedData24Hours >= 0 {
 			e.nodeServedData24Hours.With(labels).Set(float64(status.ServedData24Hours))
 			log.Debugf("Set servedData24Hours metric for %s: %d", status.PeerID, status.ServedData24Hours)
 		}
 
 		// StoredData
-		if status.StoredData > 0 {
-			e.nodeStoredData.With(labels).Set(float64(status.StoredData))
-			log.Debugf("Set storedData metric for %s: %d", status.PeerID, status.StoredData)
+		if status.StoredData != nil && status.StoredData.Sign() >= 0 {
+			// Convert big.Int to float64 for Prometheus
+			storedData, _ := new(big.Float).SetInt(status.StoredData).Float64()
+			e.nodeStoredData.With(labels).Set(storedData)
+			log.Debugf("Set storedData metric for %s: %s", status.PeerID, status.StoredData.String())
 		}
 
 		// TotalDelegation
-		if status.TotalDelegation > 0 {
-			e.nodeTotalDelegation.With(labels).Set(float64(status.TotalDelegation))
-			log.Debugf("Set totalDelegation metric for %s: %d", status.PeerID, status.TotalDelegation)
+		if status.TotalDelegation != nil && status.TotalDelegation.Sign() >= 0 {
+			// Convert big.Int to float64 for Prometheus
+			totalDelegation, _ := new(big.Float).SetInt(status.TotalDelegation).Float64()
+			e.nodeTotalDelegation.With(labels).Set(totalDelegation)
+			log.Debugf("Set totalDelegation metric for %s: %s", status.PeerID, status.TotalDelegation.String())
 		}
 
 		// ClaimedReward
-		if status.ClaimedReward > 0 {
-			e.nodeClaimedReward.With(labels).Set(float64(status.ClaimedReward))
-			log.Debugf("Set claimedReward metric for %s: %d", status.PeerID, status.ClaimedReward)
+		if status.ClaimedReward != nil && status.ClaimedReward.Sign() >= 0 {
+			// Convert big.Int to float64 for Prometheus
+			claimedReward, _ := new(big.Float).SetInt(status.ClaimedReward).Float64()
+			e.nodeClaimedReward.With(labels).Set(claimedReward)
+			log.Debugf("Set claimedReward metric for %s: %s", status.PeerID, status.ClaimedReward.String())
 		}
 
 		// ClaimableReward
-		if status.ClaimableReward > 0 {
-			e.nodeClaimableReward.With(labels).Set(float64(status.ClaimableReward))
-			log.Debugf("Set claimableReward metric for %s: %d", status.PeerID, status.ClaimableReward)
+		if status.ClaimableReward != nil && status.ClaimableReward.Sign() >= 0 {
+			// Convert big.Int to float64 for Prometheus
+			claimableReward, _ := new(big.Float).SetInt(status.ClaimableReward).Float64()
+			e.nodeClaimableReward.With(labels).Set(claimableReward)
+			log.Debugf("Set claimableReward metric for %s: %s", status.PeerID, status.ClaimableReward.String())
 		}
 	}
 

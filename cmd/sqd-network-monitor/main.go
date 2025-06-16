@@ -21,7 +21,7 @@ import (
 var (
 	configPath  = flag.String("config", "/etc/sqd-network-monitor/config.yaml", "Path to config file")
 	showVersion = flag.Bool("version", false, "Show version information and exit")
-	version     = "0.1.0"
+	version     = "0.1.1"
 	buildTime   = "unknown"
 )
 
